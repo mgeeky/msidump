@@ -1,0 +1,8 @@
+olefile
+colorama
+yara-python
+prettytable
+pefile
+cabarchive
+# ssdeep is optional
+#ssdeep 
