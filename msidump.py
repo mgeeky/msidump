@@ -1758,7 +1758,7 @@ def getoptions():
     req.add_argument('infile', help='Input MSI file (or directory) for analysis.')
     
     opt = opts.add_argument_group('Options')
-    opt.add_argument('-q', '--quiet', default=False, action='store_true', help='Surpress banner and unnecessary information')
+    opt.add_argument('-q', '--quiet', default=False, action='store_true', help='Surpress banner and unnecessary information. In triage mode, will display only verdict.')
     opt.add_argument('-v', '--verbose', default=False, action='store_true', help='Verbose mode.')
     opt.add_argument('-d', '--debug', default=False, action='store_true', help='Debug mode.')
     opt.add_argument('-N', '--nocolor', default=False, action='store_true', help='Dont use colors in text output.')
@@ -1840,10 +1840,13 @@ def processFile(args, path):
         report += msir.extract(args.extract)
 
     else:
-        report += msir.analyse()
+        rep = msir.analyse()
 
         if len(args.yara) > 0:
-            report += '\n\n' + msir.yaraScan()
+            rep += '\n\n' + msir.yaraScan()
+
+        if not args.quiet:
+            report += rep
 
         report += '\n\n' + msir.verdict.strip() + '\n'
 
