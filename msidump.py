@@ -116,7 +116,7 @@ class Logger:
         self.text('[+] ' + txt, color='green')
 
     def verbose(self, txt):
-        if self.opts.get('verbose', False):
+        if self.opts.get('verbose', False) or self.opts.get('debug', False):
             self.text('[>] ' + txt, color='cyan')
 
     def dbg(self, txt):
@@ -387,7 +387,7 @@ class MSIDumper:
         self.errorsCache = set()
         self.nativedb = None
         self.outdir = ''
-        self.verdict = f'\n{Logger.colorize("[+]","green")} Verdict: {Logger.colorize("Benign", "green")}\n'
+        self.verdict = f'Verdict: {Logger.colorize("Benign", "green")}'
         self.installer = None
         self.extractedCount = 0
         self.grade = 0
@@ -681,7 +681,9 @@ class MSIDumper:
             ret = self.analysisWorker()
 
             if self.grade > 0:
-                self.verdict = f'\n{Logger.colorize("[-]","red")} Verdict: {Logger.colorize("SUSPICIOUS", "red")}\n'
+                self.verdict = f'Verdict: {Logger.colorize("SUSPICIOUS", "red")}'
+
+            self.logger.verbose(f'Verdict grade: {self.grade}')
 
             return ret
 
@@ -1444,11 +1446,13 @@ class MSIDumper:
             if mime and magicOut in ('data', 'application/octet-stream'):
                 indicator = 'application/x-dosexec'
             if color:
-                indicator = Logger.colorize(petype, predicate.get('color', ''))
+                indicator = Logger.colorize(petype, 'red')
+            self.grade += self.gradeFoundIndicator(indicator, data, color='red')
             return indicator
 
         for format, predicate in MSIDumper.RecognizedInnerFileTypes.items():
             indicator = predicate.get('indicator', '')
+            predColor = predicate.get('color', '')
 
             if format == 'unsure-executable':
                 if data[:2] != 'MZ' and data[:2] != 'ZM':
@@ -1461,13 +1465,13 @@ class MSIDumper:
                 indicator = magicOut
 
             if color:
-                indicator = Logger.colorize(indicator, predicate.get('color', ''))
+                indicator = Logger.colorize(indicator, predColor)
                 
             magicVals = predicate.get('magic', [])
             if len(magicVals) > 0:
                 for m in magicVals:
                     if m.lower() in magicOut.lower():
-                        self.grade += self.gradeFoundIndicator(data, indicator, color)
+                        self.grade += self.gradeFoundIndicator(indicator, data, color=predColor)
                         return indicator
 
             keywords = predicate.get('keywords', [])
@@ -1499,7 +1503,7 @@ class MSIDumper:
                                 foundNots += 1
 
                     if foundNots == 0:
-                        self.grade += self.gradeFoundIndicator(data, indicator, color)
+                        self.grade += self.gradeFoundIndicator(indicator, data, color=predColor)
                         return indicator
 
         if magicOut == 'data':
@@ -1509,24 +1513,46 @@ class MSIDumper:
 
     def lookForIOCs(self):
         binary = self.collectEntries('Binary')
+        customActions = self.collectEntries('CustomAction')
         i = 0
+
+        streams = self.collectEntries('_Streams')
+        if len(streams) == 0:
+            self.report.append({
+                'name' : Logger.colorize('Missing _Streams', 'yellow'),
+                'location' : f'_Streams table',
+                'context' : '',
+                'desc' : f'Typically MSIs contain _Streams table referring .CAB archives.\nThis sample however didn\'t contain such table, making it unusual/mangled.\n',
+            })
 
         for data in binary:
             i += 1
             sniffed = self.sniffDataType(data['data'], color=True)
 
-            if sniffed != 'unknown':
-                if 'vbscript' in sniffed.lower() or 'jscript' in sniffed.lower() or 'pe exe' in sniffed.lower() \
-                    or 'pe dll' in sniffed.lower():
-                    self.grade += 1
-
+            if len(sniffed) > 0:
                 data['size'] = len(data['data'])
+                runByCa = False
+                desc = ''
+
+                i = 0
+                for ca in customActions:
+                    i += 1
+                    if ca['source'] == data['name']:
+                        runByCa = True
+                        desc = f'\nThat data will be used during installation by CustomAction {Logger.colorize(i, "yellow")}. {Logger.colorize(ca["action"], "yellow")}'
+                        break
+
+                if not runByCa:
+                    self.grade -= 1
+                    sniffed = Logger.stripColors(sniffed)
+                    sniffed = Logger.colorize(sniffed, 'yellow')
+                    desc = '\nHowever that data doesn\'t seem to be used in CustomActions, decreasing impact.'
 
                 self.report.append({
                     'name' : sniffed,
                     'location' : f'Binary table',
                     'context' : self.printRecord(data),
-                    'desc' : f'MSI contains {sniffed} data in Binary table entry {Logger.colorize(str(i), "yellow")}. {Logger.colorize(data["name"], "yellow")}',
+                    'desc' : f'MSI contains {sniffed} data in Binary table entry {Logger.colorize(str(i), "yellow")}. {Logger.colorize(data["name"], "yellow")}' + desc,
                 })
 
     def processActions(self):
@@ -1540,39 +1566,65 @@ class MSIDumper:
             for suspAction, data in MSIDumper.CustomActionTypes.items():
                 if action['type'] in data['types']:
                     desc = data['desc']
+                    color = MSIDumper.CustomActionTypes[suspAction].get('color', 'white')
 
                     fieldToHighlight = ''
 
-                    if 'vbscript' in suspAction or 'jscript' in suspAction:
+                    if 'vbscript' in suspAction.lower() or 'jscript' in suspAction.lower():
                         if len(action['source']) > 0:
                             fieldToHighlight = 'source'
-                            self.grade += 1
-                            desc += f".\nScript is located in {action['source']} Binary table record."
+                            self.grade += self.gradeFoundIndicator(suspAction, color=color)
+                            desc += f".\nScript is located in {Logger.colorize(action['source'],'yellow')} Binary table record."
 
-                    elif 'run-dll' in suspAction:
+                    elif 'run-dll' in suspAction.lower():
                         fieldToHighlight = 'source'
-                        self.grade += 1
-                        desc += f".\nDLL is located in {action['source']} Binary table record."
+                        self.grade += self.gradeFoundIndicator(suspAction, color=color)
+                        desc += f".\nDLL is located in {Logger.colorize(action['source'],'yellow')} Binary table record."
                     
-                    elif 'run-exe' in suspAction:
+                    elif 'run-exe' in suspAction.lower():
                         fieldToHighlight = 'source'
-                        self.grade += 1
-                        desc += f"\nEXE is located in {action['source']} Binary table record."
+                        self.grade += self.gradeFoundIndicator(suspAction, color=color)
+                        desc += f"\nEXE is located in {Logger.colorize(action['source'],'yellow')} Binary table record."
 
-                    elif 'set-directory' in suspAction:
+                    elif 'set-directory' in suspAction.lower():
                         fieldToHighlight = 'target'
 
-                    elif 'execute' in suspAction:
+                    elif 'execute' in suspAction.lower():
                         fieldToHighlight = 'target'
-                        self.grade += 1
-                        desc += f".\nCommand that will be executed:\ncmd> {action['target']}"
+                        self.grade += self.gradeFoundIndicator(suspAction, color=color)
+                        desc += f".\nCommand that will be executed:\ncmd> {Logger.colorize(action['target'],'red')}"
+
+                    foundInSeq = False
+                    for seq in execSeq:
+                        if seq['action'] == action['action']:
+                            foundInSeq = True
+                            cond = ''
+                            if len(seq['condition']) > 0:
+                                cond = f" with condition:\n- {Logger.colorize(seq['condition'],'yellow')}"
+
+                            desc += f"\nThat action is scheduled to run in {Logger.colorize('InstallExecuteSequence','yellow')} table" + cond + '\n'
+                            break
+
+                    for seq in uiSeq:
+                        if seq['action'] == action['action']:
+                            foundInSeq = True
+                            cond = ''
+                            if len(seq['condition']) > 0:
+                                cond = f" with condition:\n- {Logger.colorize(seq['condition'],'yellow')}"
+
+                            desc += f"\nThat action is scheduled to run in {Logger.colorize('InstallUISequence','yellow')} table" + cond + '\n'
+                            break
+
+                    if not foundInSeq:
+                        self.grade -= 1
+                        color = 'yellow'
+                        desc = '\nHowever that action doesn\'t seem to be invoked anywhere, decreasing impact.'
 
                     if len(fieldToHighlight) > 0:
-                        color = MSIDumper.CustomActionTypes[suspAction].get('color', 'white')
                         action[fieldToHighlight] = Logger.colorize(action[fieldToHighlight], color)
 
                     self.report.append({
-                        'name' : Logger.colorize(suspAction, MSIDumper.CustomActionTypes[suspAction]['color']),
+                        'name' : Logger.colorize(suspAction, color),
                         'location' : f'CustomAction table',
                         'context' : self.printRecord(action),
                         'desc' : desc
@@ -1703,7 +1755,7 @@ def getoptions():
     )
 
     req = opts.add_argument_group('Required arguments')
-    req.add_argument('infile', help='Input MSI file for analysis.')
+    req.add_argument('infile', help='Input MSI file (or directory) for analysis.')
     
     opt = opts.add_argument_group('Options')
     opt.add_argument('-q', '--quiet', default=False, action='store_true', help='Surpress banner and unnecessary information')

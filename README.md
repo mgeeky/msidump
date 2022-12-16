@@ -13,17 +13,6 @@ However, `lessmsi` doesn't implement features I was looking for:
 
 Hence this is where `msidump` comes into play.
 
-### Caveats
-
-- The program is still in an early alpha version, things are expected to break and triaging/parsing logic to change
-- Due to this tool heavy relience on Win32 COM `WindowsInstaller.Installer` interfaces, currently **it is not possible to support native Linux** platforms. Maybe `wine python msidump.py` could help, but haven't tried that yet.
-
-For the best output experience, run the tool on a **maximized console window** or redirect output to file:
-
-```
-python msidump.py [...] -o analysis.log
-```
-
 
 ## Features
 
@@ -38,6 +27,13 @@ It lets us:
 It was created as a companion tool to the blog post I released here:
 
 - [MSI Shenanigans. Part 1 - Offensive Capabilities Overview](https://mgeeky.tech/msi-shenanigans-part-1/)
+
+
+### Limitations
+
+- The program is still in an early alpha version, things are expected to break and triaging/parsing logic to change
+- Due to this tool heavy relience on Win32 COM `WindowsInstaller.Installer` interfaces, currently **it is not possible to support native Linux** platforms. Maybe `wine python msidump.py` could help, but haven't tried that yet.
+- Currently the program doesn't correlate table records with one another, making triaging assumptions weak. That's room for improvement.
 
 
 ## Use Cases
@@ -83,6 +79,11 @@ Where
 ![4.png](img/4.png)
 
 
+For the best output experience, run the tool on a **maximized console window** or redirect output to file:
+
+```
+python msidump.py [...] -o analysis.log
+```
 
 ## Full Usage
 
@@ -146,6 +147,7 @@ Analysis Specific options:
 ## TODO
 
 - Triaging logic is still a bit flakey, I'm not very proud of it. Hence it will be subject for constant redesigns and further ramifications
+  - Currently the tool doesn't reason for instance whether Binary embedded executable is acutally used or its only held there
 - Add more output formats: CSV, JSON
 - Test it on a wider test samples corpora
 - Add support for input ZIP archives with passwords
