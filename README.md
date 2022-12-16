@@ -13,6 +13,17 @@ However, `lessmsi` doesn't implement features I was looking for:
 
 Hence this is where `msidump` comes into play.
 
+### Caveats
+
+- The program is still in an early alpha version, things are expected to break and triaging/parsing logic to change
+- Due to this tool heavy relience on Win32 COM `WindowsInstaller.Installer` interfaces, currently **it is not possible to support native Linux** platforms. Maybe `wine python msidump.py` could help, but haven't tried that yet.
+
+For the best output experience, run the tool on a **maximized console window** or redirect output to file:
+
+```
+python msidump.py [...] -o analysis.log
+```
+
 
 ## Features
 
@@ -102,8 +113,6 @@ Analysis Modes:
   -l what, --list what  List specific table contents. See help message to learn what can be listed.
   -x what, --extract what
                         Extract data from MSI. For what can be extracted, refer to help message.
-  -S stream, --streams stream
-                        List OLE streams in MSI.
 
 Analysis Specific options:
   -i number|name, --record number|name
@@ -133,6 +142,16 @@ Analysis Specific options:
 
 ------------------------------------------------------
 ```
+
+## TODO
+
+- Triaging logic is still a bit flakey, I'm not very proud of it. Hence it will be subject for constant redesigns and further ramifications
+- Add more output formats: CSV, JSON
+- Test it on a wider test samples corpora
+- Add support for input ZIP archives with passwords
+- Add support for ingesting entire directory full of YARA rules instead of working with a single file only
+- Currently, the tool matches malicious `CustomAction Type`s based on assessing their numbers, which is prone to being evaded.
+  - It needs to be reworked to properly consume Type number and decompose it [onto flags](https://learn.microsoft.com/en-us/windows/win32/msi/summary-list-of-all-custom-action-types)
 
 ---
 

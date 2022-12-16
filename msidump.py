@@ -17,15 +17,14 @@ import textwrap
 import cabarchive
 import shutil
 import atexit
+import urllib
 from collections import OrderedDict
 from textwrap import fill
-
-
-#import pythoncom
 
 if sys.platform != 'win32':
     print('\n\n[!] FATAL: This script can only be used in Windows system as it works with Win32 COM/OLE interfaces.\n\n')
 
+import pythoncom
 import win32com.client
 from win32com.shell import shell, shellcon
 from win32com.client import constants
@@ -46,6 +45,7 @@ except:
 
 try:
     import colorama
+    import magic
     import yara
     import olefile
     from prettytable import PrettyTable
@@ -56,7 +56,7 @@ except ImportError as e:
 
 #########################################################
 
-VERSION = '0.1a'
+VERSION = '0.1 ALPHA'
 
 #########################################################
 
@@ -120,7 +120,7 @@ class Logger:
             self.text('[>] ' + txt, color='cyan')
 
     def dbg(self, txt):
-        if self.opts.get('debug', False) or self.opts.get('verbose', False):
+        if self.opts.get('debug', False):
             self.text('[dbg] ' + txt, color='magenta')
 
     def text(self, txt, color='none'):
@@ -191,12 +191,16 @@ class MSIDumper:
     )
 
     ListModes = (
-        'all', 'stream', 'cabs', 'binary', 'stats',
+        'all', 'olestream', 'cabs', 'binary', 'stats', 'olestreams',
     )
 
     ExtractModes = (
         'all', 'binary', 'files', 'cabs', 'scripts',
     )
+
+    KnownCOMErrors = {
+        0x80004005 : 'Could not process input database',
+    }
 
     KnownTables = (
 		'ActionText', 'AdminExecuteSequence', 'AdminUISequence', 'AdvtExecuteSequence', 'AdvtUISequence', 
@@ -226,35 +230,134 @@ class MSIDumper:
         'CustomAction', 'Binary', '_Streams', 
     )
 
+    #
+    # Approach based on assessing CustomAction Type numbers is prone to being evaded.
+    # TODO: Rework it to properly consume Type number and decompose it onto flags:
+    #  https://learn.microsoft.com/en-us/windows/win32/msi/summary-list-of-all-custom-action-types
+    #
     CustomActionTypes = {
-        Logger.colorize('execute', 'red') : {
+        'Execute' : {
+            'color' : 'red',
             'types': (1250, 3298, 226),
             'desc' : 'Will execute system commands or other executables',
         },
-        Logger.colorize('vbscript', 'red') : {
+        'VBScript' : {
+            'color' : 'red',
             'types': (1126, 102),
             'desc' : 'Will run VBScript in-memory',
         }, 
-        Logger.colorize('jscript', 'red') : {
+        'JScript' : {
+            'color' : 'red',
             'types': (1125, 101),
             'desc' : 'Will run JScript in-memory',
         },
-        Logger.colorize('run-exe', 'red') : {
+        'Run-Exe' : {
+            'color' : 'red',
             'types': (1218, 194),
             'desc' : 'Will extract executable from inner Binary table, drop it to:\n  C:\\Windows\\Installer\\MSIXXXX.tmp\nand then run it.',
         },
-        Logger.colorize('run-dll', 'red') : {
+        'Load-DLL' : {
+            'color' : 'red',
             'types': (65, ),
             'desc' : 'Will load DLL in memory and invoke its exported function.\nThat may also include .NET DLL',
         },
-        Logger.colorize('run-dropped-file', 'red') : {
+        'Run-Dropped-File' : {
+            'color' : 'red',
             'types': (1746,),
             'desc' : 'Will run file extracted as a result of installation',
         },
-        Logger.colorize('set-directory', 'cyan') : {
+        'Set-Directory' : {
+            'color' : 'cyan',
             'types': (51,),
             'desc' : 'Will set Directory to a specific path',
         },
+    }
+
+    MimeTypesThatIncreasSuspiciousScore = (
+        "application/hta",
+        "application/js",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vns.ms-appx",
+        "application/x-ms-shortcut",
+        "application/x-vbs",
+        'application/vnd.ms-excel', 
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation', 
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/x-dosexec',
+    )
+
+    RecognizedInnerFileTypes = {
+        'cabinet' : {
+            'indicator' : 'MS Cabinet archive (.CAB)',
+            'safe-extension' : '.cab',
+            'color' : 'yellow',
+            'magic' : ('Microsoft Cabinet',)
+        },
+        'executable' : {
+            'indicator' : 'PE executable (EXE)',
+            'safe-extension' : '.exe.bin',
+            'color' : 'red',
+            'magic' : (
+                'executable (console)', 
+                'executable (GUI)', 
+            )
+        },
+        'dll' : {
+            'indicator' : 'PE executable (DLL)',
+            'safe-extension' : '.dll.bin',
+            'color' : 'red',
+            'magic' : (
+                'executable (DLL)', 
+            )
+        },
+        'unsure-executable' : {
+            'indicator' : 'PE executable (?)',
+            'safe-extension' : '.exe.bin',
+            'color' : 'red',
+            'min-keywords' : 3,
+            'keywords' : (
+                'This program', 'cannot be', 'run in', 'dos mode',
+            ),
+        },
+        'unsure-cabinet' : {
+            'indicator' : 'CAB archive (?)',
+            'safe-extension' : '.cab',
+            'color' : 'yellow',
+            'min-keywords' : 1,
+            'keywords' : (
+                'MSCF',
+            ),
+        },
+        'unsure-vbscript' : {
+            'indicator' : 'VBScript (?)',
+            'safe-extension' : '.vbs.bin',
+            'color' : 'red',
+            'printable' : True,
+            'min-keywords' : 3,
+            'keywords' : (
+                'dim', 'function ', 'sub ', 'createobject', 'getobject', 'with', 'string',
+                'object', 'set', 'then', 'end if', 'end function', 'end sub'
+            ),
+            'not-keywords' : (
+                '<?xml',
+            )
+        },
+        'unsure-jscript' : {
+            'indicator' : 'JScript (?)',
+            'safe-extension' : '.js.bin',
+            'color' : 'red',
+            'printable' : True,
+            'min-keywords' : 3,
+            'keywords' : (
+                'var', 'activexobject', 'try {', 'try{', '}catch', '} catch', 'return ',
+            'function ',
+            ),
+            'not-keywords' : (
+            )
+        }
     }
 
     DangerousExtensions = (
@@ -286,7 +389,7 @@ class MSIDumper:
         self.outdir = ''
         self.verdict = f'\n{Logger.colorize("[+]","green")} Verdict: {Logger.colorize("Benign", "green")}\n'
         self.installer = None
-
+        self.extractedCount = 0
         self.grade = 0
 
         self.specificTableAlignment = {
@@ -358,6 +461,47 @@ class MSIDumper:
             lines.append(line)
         return '\n'.join(lines)
 
+    def parseCOMException(self, message, error, additional=''):
+        code = error.hresult + 2**32
+        code2 = 0
+
+        try:
+            code2 = error.excepinfo[-1] + 2**32
+        except:
+            pass
+
+        if code2 != 0:
+            if code in MSIDumper.KnownCOMErrors:
+                additional += MSIDumper.KnownCOMErrors[code]
+
+            if code2 in MSIDumper.KnownCOMErrors:
+                additional += MSIDumper.KnownCOMErrors[code2]
+
+            self.logger.err(f'''{message}:
+
+    {error}
+
+    HRESULT 1: 0x{code:08X}          <-- General exception code
+
+    HRESULT 2: 0x{code2:08X}          <-- COM exception code. Google up that error number: 
+                                        https://google.com/?q={urllib.parse.quote_plus(f"COM exception 0x{code2:08X}")}
+
+    {additional}
+''')
+
+        else:
+            if code in MSIDumper.KnownCOMErrors:
+                additional += MSIDumper.KnownCOMErrors[code]
+
+            self.logger.err(f'''{message}:
+
+    {error}
+
+    HRESULT: 0x{code:08X}          <-- General exception code
+
+    {additional}
+''')
+
     def open(self, infile):
         self.infile = os.path.abspath(os.path.normpath(infile))
         self.outdir = os.path.abspath(os.path.normpath(self.options.get('outdir', '')))
@@ -373,16 +517,34 @@ class MSIDumper:
 
         self.initCOM()
 
-        self.nativedb = self.installer.OpenDatabase(
-            self.infile, 
-            mode
-        )
+        try:
+            self.logger.dbg(f'Opening database {self.infile} ...')
+            self.nativedb = self.installer.OpenDatabase(
+                self.infile, 
+                mode
+            )
+
+            return True
+
+        except pythoncom.com_error as error:
+            if self.options['debug']:
+                self.parseCOMException(
+                    message=f"Could not open MSI database natively via COM",
+                    error=error
+                )
+
+            return False
 
     def close(self):
         if self.nativedb is not None:
             self.nativedb = None
         
         if self.installer is not None:
+            try:
+                self.installer.Release()
+            except:
+                pass
+
             self.installer = None
 
     def initCOM(self):
@@ -390,12 +552,13 @@ class MSIDumper:
             return
 
         try:
-            #pythoncom.CoInitialize()
-
             #
             # Logic borrowed from:
             #   https://github.com/orestis/python/blob/master/Tools/msi/msilib.py#L60
             #
+
+            self.logger.dbg('Initializing COM and instantiating WindowsInstaller.Installer ...')
+            pythoncom.CoInitialize()
 
             win32com.client.gencache.EnsureModule('{000C1092-0000-0000-C000-000000000046}', 1033, 1, 0)
 
@@ -545,8 +708,10 @@ class MSIDumper:
             self.logger.fatal(f'Unsupported --list setting: {table}')
 
         if table == 'streams':  table = '_Streams'
+        if table == 'stream':   table = '_Streams'
         if table == 'binary':   table = 'Binary'
         if table == 'cabs':     table = 'Media'
+        if table == 'olestreams':table = 'olestream'
 
         if table.lower() in [x.lower() for x in MSIDumper.KnownTables]:
             try:
@@ -584,12 +749,14 @@ class MSIDumper:
                 if self.options.get('debug', False):
                     raise
         else:
+            table = table.lower()
+
             try:
                 if table == 'stats':
                     records = self.collectStats()
                 elif table == 'all':
                     return self.collectAll()
-                elif table == 'stream':
+                elif table == 'olestream':
                     records = self.collectStreams()
                 else:
                     self.logger.fatal(f'Unsupported --list setting: {table}')
@@ -601,6 +768,7 @@ class MSIDumper:
                     raise
 
         if records is not None:
+            self.tableSpecificHighlighting(table, records)
             return self.printTable(table, records)
 
         else:
@@ -609,6 +777,25 @@ class MSIDumper:
             else:
                 return f'No {Logger.colorize(table, "green")} metadata was extracted.'
 
+    def tableSpecificHighlighting(self, table, records):
+        if table.lower() == 'customaction':
+            for i in range(len(records)):
+                rec = records[i]
+                for k, v in rec.items():
+                    if k == 'type':
+                        col = ''
+                        for a, b in MSIDumper.CustomActionTypes.items():
+                            if v in b['types']:
+                                col = b['color']
+                                break
+                        if col != '':
+                            records[i][k] = Logger.colorize(v, col)
+                            records[i]['source'] = Logger.colorize(records[i]['source'], col)
+
+        if table.lower() == 'binary':
+            for i in range(len(records)):
+                records[i]['Magic type'] = self.sniffDataType(records[i]['data'], color=True)
+        
     def extract(self, what):
         assert self.nativedb is not None, "Database is not opened"
 
@@ -641,17 +828,23 @@ class MSIDumper:
     def extractAll(self):
         output = ''
 
-        output += '\n\n'
-        output += self.extractBinary()
+        outs = self.extractBinary()
+        if len(outs) > 0:
+            output += outs + '\n'
         
-        output += '\n\n'
-        output += self.extractFiles()
+        outs = self.extractFiles()
+        if len(outs) > 0:
+            output += outs + '\n'
 
-        output += '\n\n'
-        output += self.extractCABs()
+        outs = self.extractCABs()
+        if len(outs) > 0:
+            output += outs + '\n'
 
-        output += '\n\n'
-        output += self.extractScripts()
+        outs = self.extractScripts()
+        if len(outs) > 0:
+            output += outs + '\n'
+
+        output += f'\nExtracted in total {self.extractedCount} objects.\n'
 
         return output
 
@@ -679,6 +872,8 @@ class MSIDumper:
         num = 0
         output = ''
 
+        self.logger.verbose('Extracting data from Binary table...')
+
         if len(binary) == 0:
             self.logger.err('Input MSI does not contain any embedded Binary data.')
 
@@ -693,7 +888,8 @@ class MSIDumper:
             num += 1
             output += f'\n{Logger.colorize("[+]","green")} Extracted {Logger.colorize(len(elem["data"]),"green")} bytes of {Logger.colorize(elem["name"],"green")} object to: {Logger.colorize(outp,"yellow")}'
 
-        if num > 0:
+        self.extractedCount += num
+        if num > 0 and self.options.get('extract', '') != 'all':
             output += f'\n\nExtracted in total {num} objects.\n'
 
         return output
@@ -701,6 +897,8 @@ class MSIDumper:
     def extractCab(self, infile, outdir, files):
         with open(infile, "rb") as f:
             arc = cabarchive.CabArchive(f.read())
+
+        self.logger.verbose('Extracting Cabinets from MSI...')
 
         output = f'Extracting files from CAB ({infile}):\n\n'
         num = 0
@@ -741,6 +939,8 @@ class MSIDumper:
         self.extractCABs()
         self.outdir = outdir
 
+        self.logger.verbose('Extracting files from MSI...')
+
         cabsNum = 0
         num = 0
         output = ''
@@ -768,7 +968,8 @@ class MSIDumper:
         if dirpath != overrideOutdir:
             shutil.rmtree(dirpath)
 
-        if num > 0:
+        self.extractedCount += num
+        if num > 0 and self.options.get('extract', '') != 'all':
             output += f'\nExtracted in total {num} files from {cabsNum} cabinets.\n'
 
         return output
@@ -793,7 +994,6 @@ class MSIDumper:
                 f.write(elem['data'].encode())
 
             num += 1
-            output += f'\n{Logger.colorize("[+]","green")} Extracted {len(elem["data"]):6} bytes of {elem["name"]:20} object to: {outp}'
 
         # source: https://github.com/decalage2/oletools/blob/master/oletools/oledir.py#L245
         ole = olefile.OleFileIO(self.infile)
@@ -820,9 +1020,10 @@ class MSIDumper:
                 f.write(data0)
 
             num += 1
-            output += f'\n{Logger.colorize("[+]","green")} Extracted {len(elem["data"]):6} bytes of {elem["name"]:20} object to: {outp}'
+            output += f'\n{Logger.colorize("[+]","green")} Extracted {Logger.colorize(len(elem["data"]), "green")} bytes of {Logger.colorize(elem["name"],"green")} object to: {Logger.colorize(outp,"yellow")}'
 
-        if num > 0:
+        self.extractedCount += num
+        if num > 0 and self.options.get('extract', '') != 'all':
             output += f'\n\nExtracted in total {num} objects.\n'
 
         return output
@@ -832,6 +1033,8 @@ class MSIDumper:
         actions = self.collectEntries('CustomAction')
         num = 0
         output = ''
+
+        self.logger.verbose('Extracting scripts from CustomAction and Binary tables...')
 
         if len(binary) == 0:
             self.logger.err('Input MSI does not contain any embedded Binary data.')
@@ -848,7 +1051,7 @@ class MSIDumper:
                 f.write(elem['target'].encode())
 
             num += 1
-            output += f'\n{Logger.colorize("[+]","green")} Extracted {len(elem["target"]):6} bytes of {elem["action"]:20} CustomAction script to: {outp}'
+            output += f'\n{Logger.colorize("[+]","green")} Extracted {Logger.colorize(len(elem["target"]),"green")} bytes of {Logger.colorize(elem["action"],"green")} CustomAction script to: {Logger.colorize(outp,"yellow")}'
 
         for elem in binary:
             sniffed = self.sniffDataType(elem['data'])
@@ -862,10 +1065,10 @@ class MSIDumper:
                 f.write(elem['data'].encode())
 
             num += 1
-            output += f'\n{Logger.colorize("[+]","green")} Extracted {len(elem["data"]):6} bytes of {elem["name"]:20} binary object script to: {outp}'
+            output += f'\n{Logger.colorize("[+]","green")} Extracted {Logger.colorize(len(elem["data"]),"green")} bytes of {Logger.colorize(elem["name"],"green")} binary object script to: {Logger.colorize(outp,"yellow")}'
 
-
-        if num > 0:
+        self.extractedCount += num
+        if num > 0 and self.options.get('extract', '') != 'all':
             output += f'\n\nExtracted in total {num} objects.\n'
 
         return output
@@ -994,7 +1197,7 @@ class MSIDumper:
 
         return self.printReport()
 
-    def normalizeDataForOutput(self, val, num=0):
+    def normalizeDataForOutput(self, val, num=0, table=''):
         if num == 0:
             num = self.options.get('print_len', MSIDumper.DefaultTableWidth)
 
@@ -1003,18 +1206,25 @@ class MSIDumper:
 
         printable = MSIDumper.isprintable(val)
 
-        if not printable:
+        if not printable and table not in ('olestream', ):
             printable2 = MSIDumper.isprintable(Logger.stripColors(val))
             if not printable2:
                 val = MSIDumper.hexdump(val) + '\n'
 
         return val
+    
+    def cleanString(self, txt):
+        txt = txt.replace('\r', '')
+        txt = txt.replace('\t', '  ')
+        return txt
 
     def printTable(self, table, records):
         if len(records) == 0:
             return f'\n\nNo records found in table {Logger.colorize(table, "green")}.'
 
         yaraColumn = ''
+        self.logger.dbg(f'Dumping {table} table results...')
+
         rules = None
         if len(self.options.get('yara', '')) > 0 and table != 'YARA Results':
             yaraColumn = 'YARA Results'
@@ -1028,15 +1238,19 @@ class MSIDumper:
                 k0 = Logger.colorize(k, "green")
                 output += f'- {k0:20} : '
 
-                v = self.normalizeDataForOutput(v, -1)
+                if type(v) is str:
+                    v = self.normalizeDataForOutput(v, -1, table=table)
 
-                if len(v) < 50:
-                    output += v
+                    if len(v) < 50:
+                        output += v
+                    else:
+                        spacer = Logger.colorize('=' * MSIDumper.DefaultTableWidth, 'yellow')
+                        output += '\n\n' + spacer + '\n\n' + v + '\n\n' + spacer + '\n'
                 else:
-                    spacer = Logger.colorize('=' * MSIDumper.DefaultTableWidth, 'yellow')
-                    output += '\n\n' + spacer + '\n\n' + v + '\n\n' + spacer + '\n'
+                    output += str(v)
 
-                output += '\n'
+                if table in ('binary', ):
+                    output += '\n'
 
             if len(yaraColumn) > 0:
                 k0 = Logger.colorize(yaraColumn, "green")
@@ -1055,7 +1269,7 @@ class MSIDumper:
             output = ''
             numCol = ['#',]
             yarCol = []
-            if 'entry_id' in records[0].keys():
+            if table == 'olestream':
                 numCol = []
 
             if len(yaraColumn) > 0:
@@ -1079,9 +1293,14 @@ class MSIDumper:
                         i += 1
                         continue
                     if type(v) is str:
-                        v = self.normalizeDataForOutput(v)
+                        v = self.normalizeDataForOutput(v, table=table)
                         s = self.cleanString(v).strip()
-                        vals.append(s + '\n')
+                        n = ''
+
+                        if table.lower() in ('binary', ):
+                            n = '\n'
+
+                        vals.append(s + n)
                     else:
                         vals.append(v)
                     i += 1
@@ -1111,11 +1330,6 @@ class MSIDumper:
                 output += f'\n\nFound {Logger.colorize(str(len(records)), "green")} records in {Logger.colorize(table, "green")} table.'
 
         return output + '\n'
-
-    def cleanString(self, txt):
-        txt = txt.replace('\r', '')
-        txt = txt.replace('\t', '  ')
-        return txt
 
     def printReport(self):
         output = ''
@@ -1175,7 +1389,7 @@ class MSIDumper:
                         v = '\n\n' + MSIDumper.hexdump(v) + '\n'
 
                     if self.options.get('record', -1) == -1 and len(v) > 256: 
-                        v = '\n\n' + v[:256] + '\n\n[CUT FOR BREVITY]\n'
+                        v = '\n\n' + v[:256].strip() + '\n\t[CUT FOR BREVITY]\n'
 
                 k = Logger.colorize(k, 'yellow')
                 out += indent + f'- {k:{keyLen}}: {v}\n'
@@ -1190,80 +1404,108 @@ class MSIDumper:
         pe = None
         try:
             pe = pefile.PE(data=data.encode(), fast_load=True)
-            _format = 'PE EXE'
+            _format = MSIDumper.RecognizedInnerFileTypes['executable']['indicator']
 
             if pe.OPTIONAL_HEADER.DllCharacteristics != 0:
-                _format = 'PE DLL'
+                _format = MSIDumper.RecognizedInnerFileTypes['dll']['indicator']
+
             pe.close()
             return (True, _format)
-        except pefile.PEFormatError:
+        except pefile.PEFormatError as e:
+            logger.dbg(f'pefile error: {e}')
             return (False, '')
         finally:
             if pe:
                 pe.close()
 
     def sniffDataExt(self, sniffed):
-        sniffed = Logger.stripColors(sniffed).lower()
-        if sniffed == 'unknown':
-            return '.bin'
-        elif sniffed == '.cab':
-            return '.cab'
-        elif sniffed == 'pe exe':
-            return '.exe.bin'
-        elif sniffed == 'pe dll':
-            return '.dll.bin'
-        elif 'vbscript' in sniffed.lower():
-            return '.vbs.bin'
-        elif 'jscript' in sniffed.lower():
-            return '.js.bin'
+        for k, v in MSIDumper.RecognizedInnerFileTypes.items():
+            if v['indicator'].lower() == sniffed.lower():
+                return MSIDumper.RecognizedInnerFileTypes[k]['safe-extension']
+
+        return ''
+
+    def gradeFoundIndicator(self, indicator, data='', color='', mime=''):
+        if color != '':
+            if color == 'red':
+                return 1
+        
+        if mime != '' and mime.lower() in MSIDumper.MimeTypesThatIncreasSuspiciousScore:
+            return 1
+
+        return 0
 
     def sniffDataType(self, data, color=False):
-        output = 'unknown'
+        mime = self.options.get('mime', False)
+        magicOut = magic.from_buffer(data, mime=mime)
 
-        vbsKeywords = (
-            'dim', 'function ', 'sub ', 'createobject', 'getobject', 'with', 'string',
-            'object', 'set', 'then', 'end if', 'end function', 'end sub'
-        )
+        pe, petype = MSIDumper.isValidPE(data)
+        if pe:
+            if mime and magicOut in ('data', 'application/octet-stream'):
+                indicator = 'application/x-dosexec'
+            if color:
+                indicator = Logger.colorize(petype, predicate.get('color', ''))
+            return indicator
 
-        jsKeywords = (
-            'var', 'activexobject', 'try {', 'try{', '}catch', '} catch', 'return ',
-            'function ',
-        )
+        for format, predicate in MSIDumper.RecognizedInnerFileTypes.items():
+            indicator = predicate.get('indicator', '')
 
-        if data[:4] == 'MSCF':
-            if not color:
-                return '.CAB'
-            return Logger.colorize('.CAB', 'yellow')
+            if format == 'unsure-executable':
+                if data[:2] != 'MZ' and data[:2] != 'ZM':
+                    continue
+            elif format == 'unsure-cabinet':
+                if data[:4] != 'MSCF':
+                    continue
 
-        if data[:2] == 'MZ':
-            status, _format = MSIDumper.isValidPE(data)
-            if status:
-                if not color:
-                    return _format
-                return Logger.colorize(_format, 'red')
+            if mime:
+                indicator = magicOut
 
-        if MSIDumper.isprintable(data):
-            foundWords = 0
-            for w in vbsKeywords:
-                if re.search(r'\b' + re.escape(w) + r'\b', data.lower(), re.I):
-                    foundWords += 1
+            if color:
+                indicator = Logger.colorize(indicator, predicate.get('color', ''))
+                
+            magicVals = predicate.get('magic', [])
+            if len(magicVals) > 0:
+                for m in magicVals:
+                    if m.lower() in magicOut.lower():
+                        self.grade += self.gradeFoundIndicator(data, indicator, color)
+                        return indicator
 
-            if foundWords > 3:
-                if not color:
-                    return 'VBScript (?)'
-                return Logger.colorize('VBScript (?)', 'red')
+            keywords = predicate.get('keywords', [])
+            minkeywords = predicate.get('min-keywords', 0)
+            
+            printable = predicate.get('printable', 0)
+            printableMet = False
+            if printable:
+                if MSIDumper.isprintable(data):
+                    printableMet = True
 
-            foundWords = 0
-            for w in jsKeywords:
-                if re.search(r'\b' + re.escape(w) + r'\b', data.lower(), re.I):
-                    foundWords += 1
+            if printable and not printableMet:
+                continue
 
-            if foundWords > 3:
-                if not color:
-                    return 'JScript (?)'
-                return Logger.colorize('JScript (?)', 'red')
+            if len(keywords) > 0 and minkeywords > 0:
+                skip = False
+                found = 0
+                for keyword in keywords:
+                    if re.search(r'\b' + re.escape(keyword) + r'\b', data, re.I):
+                        found += 1
 
-        return output
+                if found >= minkeywords:
+                    foundNots = 0
+                    notkeywords = predicate.get('not-keywords', [])
+
+                    if len(notkeywords) > 0:
+                        for keyword in notkeywords:
+                            if re.search(r'\b' + re.escape(keyword) + r'\b', data, re.I):
+                                foundNots += 1
+
+                    if foundNots == 0:
+                        self.grade += self.gradeFoundIndicator(data, indicator, color)
+                        return indicator
+
+        if magicOut == 'data':
+            return ''
+
+        return magicOut
 
     def lookForIOCs(self):
         binary = self.collectEntries('Binary')
@@ -1277,6 +1519,8 @@ class MSIDumper:
                 if 'vbscript' in sniffed.lower() or 'jscript' in sniffed.lower() or 'pe exe' in sniffed.lower() \
                     or 'pe dll' in sniffed.lower():
                     self.grade += 1
+
+                data['size'] = len(data['data'])
 
                 self.report.append({
                     'name' : sniffed,
@@ -1297,32 +1541,38 @@ class MSIDumper:
                 if action['type'] in data['types']:
                     desc = data['desc']
 
+                    fieldToHighlight = ''
+
                     if 'vbscript' in suspAction or 'jscript' in suspAction:
                         if len(action['source']) > 0:
-                            action['source'] = Logger.colorize(action['source'], 'red')
+                            fieldToHighlight = 'source'
                             self.grade += 1
                             desc += f".\nScript is located in {action['source']} Binary table record."
 
                     elif 'run-dll' in suspAction:
-                        action['source'] = Logger.colorize(action['source'], 'red')
+                        fieldToHighlight = 'source'
                         self.grade += 1
                         desc += f".\nDLL is located in {action['source']} Binary table record."
                     
                     elif 'run-exe' in suspAction:
-                        action['source'] = Logger.colorize(action['source'], 'red')
+                        fieldToHighlight = 'source'
                         self.grade += 1
                         desc += f"\nEXE is located in {action['source']} Binary table record."
 
                     elif 'set-directory' in suspAction:
-                        action['target'] = Logger.colorize(action['target'], 'cyan')
+                        fieldToHighlight = 'target'
 
                     elif 'execute' in suspAction:
-                        action['target'] = Logger.colorize(action['target'], 'red')
+                        fieldToHighlight = 'target'
                         self.grade += 1
                         desc += f".\nCommand that will be executed:\ncmd> {action['target']}"
 
+                    if len(fieldToHighlight) > 0:
+                        color = MSIDumper.CustomActionTypes[suspAction].get('color', 'white')
+                        action[fieldToHighlight] = Logger.colorize(action[fieldToHighlight], color)
+
                     self.report.append({
-                        'name' : suspAction,
+                        'name' : Logger.colorize(suspAction, MSIDumper.CustomActionTypes[suspAction]['color']),
                         'location' : f'CustomAction table',
                         'context' : self.printRecord(action),
                         'desc' : desc
@@ -1428,7 +1678,7 @@ def getoptions():
     --list CustomAction     - Specific table
     --list stats            - Print MSI database statistics
     --list all              - All tables and their contents
-    --list stream           - Prints all OLE streams & storages. 
+    --list olestream        - Prints all OLE streams & storages. 
                               To display CABs embedded in MSI try: --list _Streams
     --list cabs             - Lists embedded CAB files
     --list binary           - Lists binary data embedded in MSI for its own purposes.
@@ -1463,11 +1713,11 @@ def getoptions():
     opt.add_argument('-n', '--print-len', default=MSIDumper.DefaultTableWidth, type=int, help='When previewing data - how many bytes to include in preview/hexdump. Default: 128')
     opt.add_argument('-f', '--format', default='text', choices=['text', 'json', 'csv'], help='Output format: text, json, csv. Default: text')
     opt.add_argument('-o', '--outfile', metavar='path', default='', help='Redirect program output to this file.')
+    opt.add_argument('-m', '--mime', default=False, action='store_true', help='When sniffing inner data type, report MIME types')
     
     mod = opts.add_argument_group('Analysis Modes')
     mod.add_argument('-l', '--list', metavar='what', default='', help='List specific table contents. See help message to learn what can be listed.')
     mod.add_argument('-x', '--extract', metavar='what', default='', help='Extract data from MSI. For what can be extracted, refer to help message.')
-    mod.add_argument('-S', '--streams', metavar='stream', default='', help='List OLE streams in MSI.')
 
     spec = opts.add_argument_group('Analysis Specific options')
     spec.add_argument('-i', '--record', metavar='number|name', type=str, default=-1, help='Can be a number or name. In --list mode, specifies which record to dump/display entirely. In --extract mode dumps only this particular record to --outdir')
@@ -1485,9 +1735,7 @@ def getoptions():
 
     args.infile = os.path.abspath(os.path.normpath(args.infile))
 
-    if not os.path.isdir(os.path.dirname(args.infile)):
-        logger.fatal(f'Directory pointed by --infile does not exist!')
-    if not os.path.isfile(args.infile):
+    if not os.path.isfile(args.infile) and not os.path.isdir(args.infile):
         logger.fatal(f'--infile does not exist!')
 
     exclusive = sum([len(args.list) > 0, len(args.extract) > 0])
@@ -1519,30 +1767,19 @@ def banner():
     | | | | | \__ \ | (_| | |_| | | | | | | |_) |
     |_| |_| |_|___/_|\__,_|\__,_|_| |_| |_| .__/ 
                                         |_|    
-    version: {VERSION}
+    version: {Logger.colorize(VERSION, "green")}
     author : Mariusz Banach (mgeeky, @mariuszbit)
              <mb [at] binary-offensive.com>
 ''')
 
-def main():
-    global options
-    args = getoptions()
-    if not args:
-        return False
-
-    if not args.quiet:
-        banner()
-
-    if len(args.outfile) > 0:
-        options['nocolor'] = True
-
-    options['max_width'] = terminalWidth()
-
+def processFile(args, path):
     msir = MSIDumper(options, logger)
-    msir.open(args.infile)
 
-    report = ''
-    report += f'{Logger.colorize("[+]","green")} Analyzing : {args.infile}\n\n'
+    if not msir.open(path):
+        logger.err(f'Could not open database (use -d to learn more): {path}')
+        return ''
+
+    report = f'{Logger.colorize("[+]","green")} Analyzing : {path}\n\n'
 
     if len(args.list) > 0:
         report += msir.listTable(args.list)
@@ -1558,14 +1795,56 @@ def main():
 
         report += '\n\n' + msir.verdict.strip() + '\n'
 
+    logger.ok(f'Database processed : {path}')
+    msir.close()
+
+    return report
+
+def processDir(args, infile):
+    report = ''
+
+    logger.verbose(f'Process files from directory: {infile}')
+
+    for file in glob.glob(os.path.join(infile, '**/**'), recursive=True):
+        path = os.path.join(infile, file)
+        if os.path.isfile(path):
+            try:
+                report += processFile(args, path)
+                report += '\n\n'
+
+            except Exception as e:
+                logger.err('Analysis of "{}" failed. Exception: {}'.format(
+                    path, str(e)
+                ))
+
+    return report
+
+def main():
+    global options
+    args = getoptions()
+    if not args:
+        return False
+
+    if not args.quiet:
+        banner()
+
+    if len(args.outfile) > 0:
+        options['nocolor'] = True
+
+    options['max_width'] = terminalWidth()
+
+    if os.path.isfile(args.infile):
+        report = processFile(args, args.infile)
+
+    else:
+        report = processDir(args, args.infile)
+
     if len(args.outfile) > 0:
         with open(args.outfile, 'wb') as f:
             rep = Logger.stripColors(report)
             f.write(rep.encode())
     else:
         print(report)
-
-    msir.close()
 
 if __name__ == '__main__':
     main()
