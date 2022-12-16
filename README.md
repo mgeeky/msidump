@@ -33,7 +33,6 @@ It was created as a companion tool to the blog post I released here:
 
 - The program is still in an early alpha version, things are expected to break and triaging/parsing logic to change
 - Due to this tool heavy relience on Win32 COM `WindowsInstaller.Installer` interfaces, currently **it is not possible to support native Linux** platforms. Maybe `wine python msidump.py` could help, but haven't tried that yet.
-- Currently the program doesn't correlate table records with one another, making triaging assumptions weak. That's room for improvement.
 
 
 ## Use Cases
@@ -147,7 +146,6 @@ Analysis Specific options:
 ## TODO
 
 - Triaging logic is still a bit flakey, I'm not very proud of it. Hence it will be subject for constant redesigns and further ramifications
-  - Currently the tool doesn't reason for instance whether Binary embedded executable is acutally used or its only held there
 - Add more output formats: CSV, JSON
 - Test it on a wider test samples corpora
 - Add support for input ZIP archives with passwords
