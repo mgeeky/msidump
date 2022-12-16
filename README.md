@@ -23,6 +23,7 @@ It lets us:
 - List all MSI tables as well as dump specific records
 - Extract Binary data, all files from CABs, scripts from CustomActions
 - scan all inner data and records with YARA rules
+- Uses `file`/MIME type deduction to determine inner data type
 
 It was created as a companion tool to the blog post I released here:
 
@@ -88,17 +89,14 @@ python msidump.py [...] -o analysis.log
 
 ```
 PS D:\> python .\msidump.py --help
-usage:
-Usage: msidump.py [options] <infile.msi>
-
 options:
   -h, --help            show this help message and exit
 
 Required arguments:
-  infile                Input MSI file for analysis.
+  infile                Input MSI file (or directory) for analysis.
 
 Options:
-  -q, --quiet           Surpress banner and unnecessary information
+  -q, --quiet           Surpress banner and unnecessary information. In triage mode, will display only verdict.
   -v, --verbose         Verbose mode.
   -d, --debug           Debug mode.
   -N, --nocolor         Dont use colors in text output.
@@ -108,6 +106,7 @@ Options:
                         Output format: text, json, csv. Default: text
   -o path, --outfile path
                         Redirect program output to this file.
+  -m, --mime            When sniffing inner data type, report MIME types
 
 Analysis Modes:
   -l what, --list what  List specific table contents. See help message to learn what can be listed.
@@ -127,7 +126,7 @@ Analysis Specific options:
     --list CustomAction     - Specific table
     --list stats            - Print MSI database statistics
     --list all              - All tables and their contents
-    --list stream           - Prints all OLE streams & storages.
+    --list olestream        - Prints all OLE streams & storages.
                               To display CABs embedded in MSI try: --list _Streams
     --list cabs             - Lists embedded CAB files
     --list binary           - Lists binary data embedded in MSI for its own purposes.
