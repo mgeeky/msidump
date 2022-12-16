@@ -387,7 +387,7 @@ class MSIDumper:
         self.errorsCache = set()
         self.nativedb = None
         self.outdir = ''
-        self.verdict = f'Verdict: {Logger.colorize("Benign", "green")}'
+        self.verdict = f'[.] Verdict: {Logger.colorize("Benign", "green")}'
         self.installer = None
         self.extractedCount = 0
         self.grade = 0
@@ -681,7 +681,7 @@ class MSIDumper:
             ret = self.analysisWorker()
 
             if self.grade > 0:
-                self.verdict = f'Verdict: {Logger.colorize("SUSPICIOUS", "red")}'
+                self.verdict = f'[.] Verdict: {Logger.colorize("SUSPICIOUS", "red")}'
 
             self.logger.verbose(f'Verdict grade: {self.grade}')
 
@@ -1831,7 +1831,9 @@ def processFile(args, path):
         logger.err(f'Could not open database (use -d to learn more): {path}')
         return ''
 
-    report = f'{Logger.colorize("[+]","green")} Analyzing : {path}\n\n'
+    report = ''
+    if not args.quiet:
+        report += f'{Logger.colorize("[+]","green")} Analyzing : {path}\n\n'
 
     if len(args.list) > 0:
         report += msir.listTable(args.list)
@@ -1847,8 +1849,14 @@ def processFile(args, path):
 
         if not args.quiet:
             report += rep
+            report += '\n\n' + msir.verdict.strip() + '\n'
+        else:
+            verd = msir.verdict.strip()
+            pos = verd.find(':')
+            if pos != -1:
+                verd = verd[pos+1:].strip()
 
-        report += '\n\n' + msir.verdict.strip() + '\n'
+            report += verd + ' : ' + path
 
     logger.ok(f'Database processed : {path}')
     msir.close()
