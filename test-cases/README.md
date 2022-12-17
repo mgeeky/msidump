@@ -5,3 +5,11 @@
 - `sample3-run-calc-shellcode-via-dotnet.msi.bin` - bundles specially crafted CustomAction .NET DLL, that when executed, runs shellcode which spawns `calc`
 - `sample4-customaction-run-calc.msi.bin` - simple MSI that runs system commands after installation is complete, here runs `calc`
 - `putty-backdoored.msi.bin` - runs `calc` during PuTTY installation
+
+All these installers install themselves to `%LOCALAPPDATA%\VcRedist` directory.
+
+You can uninstall them with:
+
+```
+msiexec /q /x file.msi
+```
