@@ -1439,7 +1439,11 @@ class MSIDumper:
 
     def sniffDataType(self, data, color=False):
         mime = self.options.get('mime', False)
-        magicOut = magic.from_buffer(data, mime=mime)
+        magicOut = 'data'
+        try:
+            magicOut = magic.from_buffer(data, mime=mime)
+        except Exception as e:
+            self.logger.dbg(f'Magic failed fingerprinting data: {e}')
 
         pe, petype = MSIDumper.isValidPE(data)
         if pe:
