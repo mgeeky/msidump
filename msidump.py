@@ -703,18 +703,44 @@ class MSIDumper:
             pass
 
     def listTable(self, table):
+        if ',' in table:
+            output = ''
+            tables = table.split(',')
+            for t in tables:
+
+                out = self._listTable(t)
+                if out is not None:
+                    output += str(out) + '\n'
+
+            return output
+        else:
+            return self._listTable(table)
+
+    def _listTable(self, table):
         assert self.nativedb is not None, "Database is not opened"
 
         records = None
-
-        if table.lower() not in [x.lower() for x in MSIDumper.KnownTables + MSIDumper.ListModes]:
-            self.logger.fatal(f'Unsupported --list setting: {table}')
 
         if table == 'streams':  table = '_Streams'
         if table == 'stream':   table = '_Streams'
         if table == 'binary':   table = 'Binary'
         if table == 'cabs':     table = 'Media'
         if table == 'olestreams':table = 'olestream'
+
+        if table.lower() not in [x.lower() for x in MSIDumper.KnownTables + MSIDumper.ListModes]:
+            tb = PrettyTable(['1','2','3'])
+            tb.header = False
+            vals = list(MSIDumper.KnownTables + MSIDumper.ListModes)
+            i = 0
+            while i + 3 < len(vals):
+                tb.add_row([vals[i+0], vals[i+1], vals[i+2]])
+                i += 3
+
+            if i < len(vals):
+                for j in range(len(vals)-i):
+                    tb.add_row([vals[i+j], '', ''])
+
+            self.logger.fatal(f'Unsupported --list setting: {table}\n    Pick one/combination of following --list values:\n\n{tb}\n')
 
         if table.lower() in [x.lower() for x in MSIDumper.KnownTables]:
             try:
@@ -1241,12 +1267,12 @@ class MSIDumper:
             matchesReport = []
             rules = self.initYara()
 
-        if len(records) == 1:
-            output = '\n'
+        if len(records) == 1 and (self.options.get('record', '') != -1 and len(self.options.get('record', '')) > 0):
+            output = ''
 
             for k, v in records[0].items():
                 k0 = Logger.colorize(k, "green")
-                output += f'- {k0:20} : '
+                output += f'\n- {k0:20} : '
 
                 if type(v) is str:
                     v = self.normalizeDataForOutput(v, -1, table=table)
@@ -1262,9 +1288,11 @@ class MSIDumper:
                 if table in ('binary', ):
                     output += '\n'
 
+            output += '\n'
+
             if len(yaraColumn) > 0:
                 k0 = Logger.colorize(yaraColumn, "green")
-                output += f'- {k0:20} : '
+                output += f'\n- {k0:20} : '
 
                 for k, v in records[0].items(): 
                     if type(v) is not str:
@@ -1769,6 +1797,7 @@ def getoptions():
 
 - What can be listed:
     --list CustomAction     - Specific table
+    --list Registry,File    - List multiple tables
     --list stats            - Print MSI database statistics
     --list all              - All tables and their contents
     --list olestream        - Prints all OLE streams & storages. 

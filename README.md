@@ -124,6 +124,7 @@ Analysis Specific options:
 
 - What can be listed:
     --list CustomAction     - Specific table
+    --list Registry,File    - List multiple tables
     --list stats            - Print MSI database statistics
     --list all              - All tables and their contents
     --list olestream        - Prints all OLE streams & storages.
