@@ -1,7 +1,7 @@
 olefile
 colorama
 yara-python
-prettytable
+prettytable>=3.5
 pefile
 cabarchive
 pywin32

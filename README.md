@@ -145,7 +145,6 @@ Analysis Specific options:
 ## TODO
 
 - Triaging logic is still a bit flakey, I'm not very proud of it. Hence it will be subject for constant redesigns and further ramifications
-- Add more output formats: CSV, JSON
 - Test it on a wider test samples corpora
 - Add support for input ZIP archives with passwords
 - Add support for ingesting entire directory full of YARA rules instead of working with a single file only

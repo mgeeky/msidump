@@ -61,8 +61,9 @@ VERSION = '0.1 ALPHA'
 #########################################################
 
 options = {
-    'debug' : False,
-    'verbose' : False,
+    'debug'     : False,
+    'verbose'   : False,
+    'format'    : 'text',
 }
 
 logger = None
@@ -584,7 +585,7 @@ class MSIDumper:
         except Exception as e:
             self.logger.dbg(f'Error: Table {table} did not contain any records.')
 
-            if self.options.get('debug', False):
+            if self.options.get('debug', False) and table.lower() != '_streams':
                 raise
 
         return entries
@@ -694,7 +695,7 @@ class MSIDumper:
             if self.options['debug']: 
                 raise
             else:
-                Logger.err(f'Could not analyse input MSI. Enable --debug to learn more. Exception: {e}')
+                self.logger.err(f'Could not analyse input MSI. Enable --debug to learn more. Exception: {e}')
 
             return False
 
@@ -1218,6 +1219,13 @@ class MSIDumper:
     def cleanString(self, txt):
         txt = txt.replace('\r', '')
         txt = txt.replace('\t', '  ')
+
+        if self.options.get('format', 'text') in ('csv', 'json'):
+            txt = Logger.stripColors(txt)
+            txt = ''.join(filter(lambda x: x in string.printable, txt))
+            txt = txt.replace('\n', ' ')
+            txt = re.sub(r'\s+', ' ', txt, re.I)
+        
         return txt
 
     def printTable(self, table, records):
@@ -1324,14 +1332,29 @@ class MSIDumper:
                         i += 1
                     vals.append(val)
 
-                tbl.add_row(vals)
+                if self.options['format'] == 'csv':
+                    tbl.add_row([str(x).replace(self.csvDelim, '') for x in vals])
+                else:
+                    tbl.add_row(vals)
 
-            output += str(tbl)
+            if self.options['format'] == 'text':
+                output += str(tbl)
 
-            if table != 'YARA Results':
-                output += f'\n\nFound {Logger.colorize(str(len(records)), "green")} records in {Logger.colorize(table, "green")} table.'
+                if table != 'YARA Results' and self:
+                    output += f'\n\nFound {Logger.colorize(str(len(records)), "green")} records in {Logger.colorize(table, "green")} table.'
 
-        return output + '\n'
+                output += '\n'
+
+            elif self.options['format'] == 'json':
+                output += str(tbl.get_json_string())
+            
+            elif self.options['format'] == 'csv':
+                output += str(tbl.get_csv_string(delimiter=self.csvDelim, escapechar='\\'))
+            
+            # elif self.options['format'] == 'html':
+            #     output += str(tbl.get_html_string())
+            
+        return output
 
     def printReport(self):
         output = ''
@@ -1363,9 +1386,23 @@ class MSIDumper:
                 else:
                     vals.append(v)
 
-            tbl.add_row(vals)
+            if self.options['format'] == 'csv':
+                tbl.add_row([str(x).replace(self.csvDelim, '') for x in vals])
+            else:
+                tbl.add_row(vals)
 
-        output += str(tbl)
+        if self.options['format'] == 'text':
+            output += str(tbl)
+
+        elif self.options['format'] == 'json':
+            output += str(tbl.get_json_string())
+        
+        elif self.options['format'] == 'csv':
+            output += str(tbl.get_csv_string(delimiter=self.csvDelim, escapechar='\\'))
+        
+        # elif self.options['format'f] == 'html':
+        #     output += str(tbl.get_html_string())
+
         return output
 
     def printRecord(self, rec, indent=''):
@@ -1397,7 +1434,7 @@ class MSIDumper:
                 out += indent + f'- {k:{keyLen}}: {v}\n'
 
         elif self.format == 'csv':
-            out = self.csvDelim.join([x.replace(self.csvDelim, '') for x in rec.values()])
+            out = self.csvDelim.join([str(x).replace(self.csvDelim, '')[:self.maxWidth] for x in rec.values()])
 
         return out
 
@@ -1836,7 +1873,7 @@ def processFile(args, path):
         return ''
 
     report = ''
-    if not args.quiet:
+    if not args.quiet and args.format == 'text':
         report += f'{Logger.colorize("[+]","green")} Analyzing : {path}\n\n'
 
     if len(args.list) > 0:
@@ -1852,9 +1889,12 @@ def processFile(args, path):
             rep += '\n\n' + msir.yaraScan()
 
         if not args.quiet:
-            report += rep
-            report += '\n\n' + msir.verdict.strip() + '\n'
-        else:
+            report += str(rep)
+
+            if args.format == 'text':
+                report += '\n\n' + msir.verdict.strip() + '\n'
+
+        elif args.format == 'text':
             verd = msir.verdict.strip()
             pos = verd.find(':')
             if pos != -1:
@@ -1862,7 +1902,8 @@ def processFile(args, path):
 
             report += verd + ' : ' + path
 
-    logger.ok(f'Database processed : {path}')
+    if args.format == 'text':
+        logger.ok(f'Database processed : {path}')
     msir.close()
 
     return report
@@ -1892,7 +1933,7 @@ def main():
     if not args:
         return False
 
-    if not args.quiet:
+    if not args.quiet and args.format == 'text':
         banner()
 
     if len(args.outfile) > 0:
