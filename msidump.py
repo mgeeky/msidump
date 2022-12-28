@@ -707,6 +707,7 @@ class MSIDumper:
             output = ''
             tables = table.split(',')
             for t in tables:
+                output += f'{Logger.colorize("[+]", "green")} Listing: {Logger.colorize(t, "green")}\n\n'
 
                 out = self._listTable(t)
                 if out is not None:
@@ -1369,7 +1370,7 @@ class MSIDumper:
                 output += str(tbl)
 
                 if table != 'YARA Results' and self:
-                    output += f'\n\nFound {Logger.colorize(str(len(records)), "green")} records in {Logger.colorize(table, "green")} table.'
+                    output += f'\n\n[.] Found {Logger.colorize(str(len(records)), "green")} records in {Logger.colorize(table, "green")} table.'
 
                 output += '\n'
 
@@ -1852,7 +1853,7 @@ def getoptions():
     logger = Logger(options)
 
     if len(args.list) > 0:
-        if args.list.lower() not in [x.lower() for x in MSIDumper.ListModes + MSIDumper.KnownTables]:
+        if args.list.lower() not in [x.lower() for x in MSIDumper.ListModes + MSIDumper.KnownTables] and ',' not in args.list:
             logger.err(f'WARNING: Requested {args.list} table is not recognized: parser will probably crash!')
 
     args.infile = os.path.abspath(os.path.normpath(args.infile))
