@@ -1891,7 +1891,7 @@ def banner():
                                         |_|    
     version: {Logger.colorize(VERSION, "green")}
     author : Mariusz Banach (mgeeky, @mariuszbit)
-             <mb [at] binary-offensive.com>
+             binary-offensive.com
 ''')
 
 def processFile(args, path):
