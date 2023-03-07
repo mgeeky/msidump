@@ -152,6 +152,14 @@ Analysis Specific options:
 - Currently, the tool matches malicious `CustomAction Type`s based on assessing their numbers, which is prone to being evaded.
   - It needs to be reworked to properly consume Type number and decompose it [onto flags](https://learn.microsoft.com/en-us/windows/win32/msi/summary-list-of-all-custom-action-types)
 
+
+## Tool's Name
+
+Apparently when naming my tool, I didn't think on checking whether it was already taken.
+There is another tool named `msidump` being part of [msitools](https://gitlab.gnome.org/GNOME/msitools) GNU package:
+
+- [msidump](https://wiki.gnome.org/msitools)
+
 ---
 
 ### ☕ Show Support ☕
